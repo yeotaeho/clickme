@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:wowtale.net)",
+      "Bash(Get-ChildItem -Path \"C:\\\\project\\\\roadmap\\\\backend\" -Recurse -File)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(python *)",
+      "Bash(Get-Content \"C:\\\\Users\\\\804\\\\Documents\\\\roadmapaa\\\\backend\\\\domain\\\\multiagent\\\\models\\\\enums\\\\__init__.py\" -ErrorAction SilentlyContinue)",
+      "Bash(Get-Content \"C:\\\\Users\\\\804\\\\Documents\\\\roadmapaa\\\\backend\\\\domain\\\\multiagent\\\\models\\\\bases\\\\__init__.py\" -ErrorAction SilentlyContinue)",
+      "Bash(Write-Output \"done\")"
+    ]
+  },
+  "mcpServers": {
+    "neon-db": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@neondatabase/mcp-server-neon",
+        "start",
+        "napi_13h0kjijjbnmyh3a928dse81rq321gp8725wqjypr3w0ilgyv90dulnouyftfjmn"
+      ]
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "env": {
+        "BRAVE_API_KEY": "BSAdGwdluFuaiocSW3E4aEx9EW2VUsC"
+      }
+    },
+    "local-memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    }
+  }
+}

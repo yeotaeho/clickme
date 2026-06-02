@@ -1,0 +1,28 @@
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+**/build/
+**/dist/
+**/.gradle/
+**/node_modules/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+dart_defines/local.env
+# Temporary
+dummy
+*.tmp
+*.swp
+
+

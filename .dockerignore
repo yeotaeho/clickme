@@ -1,0 +1,36 @@
+# Build outputs
+**/bin/
+**/build/
+**/dist/
+**/.gradle/
+**/out/
+
+# IDE
+**/.vscode/
+**/.idea/
+**/*.iml
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+
+# Node
+**/node_modules/
+**/.next/
+**/out/
+
+# Logs
+**/*.log
+
+# Environment
+**/.env
+**/.env.local
+
+# Git
+**/.git/
+**/.gitignore
+
+# Temporary
+**/*.tmp
+**/*.swp
+

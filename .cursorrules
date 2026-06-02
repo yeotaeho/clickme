@@ -1,0 +1,406 @@
+# Persona.100 — Cursor Rules
+
+## 프로젝트 컨텍스트
+
+**서비스**: 100개 LLM 에이전트로 광고 소재를 사전 평가하는 B2B SaaS (MarTech)
+**한 줄 요약**: 실제 매체비 소진 전, 가상 타깃 100명에게 광고를 미리 보여주고 성과를 예측한다
+**현재 단계**: Phase 1 MVP — 모든 `.py`가 빈 파일이며 구현 착수 단계
+**핵심 문서**:
+- 서비스 기획: `docs/PERSONA100_SERVICE_PLAN.md`
+- 백엔드 기술 레퍼런스: `backend/docs/MULTIAGENT_TECHNICAL_REFERENCE.md`
+- Phase 2+ 확장 명세: `backend/docs/PHASE2_EXPANSION_REFERENCE.md`
+
+---
+
+## 디렉토리 구조 & 역할
+
+```
+backend/
+├── main.py                              # FastAPI 앱 진입점
+├── core/
+│   ├── config/settings.py               # Pydantic BaseSettings (환경변수)
+│   └── database.py                      # AsyncSession 팩토리
+├── api/v1/multiagent/router.py          # REST + SSE 라우터
+└── domain/
+    └── multiagent/                      # 핵심 도메인
+        ├── hub/
+        │   ├── orchestrator/            # LangGraph 그래프 조립
+        │   ├── services/                # 비즈니스 로직 (트랜잭션 경계)
+        │   ├── repositories/            # DB CRUD (AsyncSession)
+        │   ├── routing/                 # 요청 → 서비스 라우팅
+        │   └── mcp/                     # MCP 서버 연결
+        ├── models/
+        │   ├── bases/                   # Pydantic 엔티티 (Persona, AdAnalysis 등)
+        │   ├── enums/                   # 상태·타입 열거형
+        │   ├── states/                  # LangGraph TypedDict State
+        │   └── transfer/                # API 요청/응답 DTO
+        └── spokes/
+            ├── agents/                  # 개별 LLM 에이전트 구현
+            ├── infra/                   # 외부 API 클라이언트 (OpenAI, Anthropic)
+            └── retreivers/              # pgvector RAG 조회 (오탈자 유지 — 변경 금지)
+```
+
+---
+
+## 기술 스택
+
+| 레이어 | 기술 | 버전 |
+|--------|------|------|
+| API | FastAPI + Uvicorn | 0.115+ |
+| 데이터 검증 | Pydantic | v2 |
+| AI 오케스트레이션 | LangGraph | 0.0.40+ |
+| LLM (기본) | OpenAI GPT-4o / GPT-4o-mini | latest |
+| LLM (폴백) | Anthropic Claude Haiku | latest |
+| LLM (분석) | Claude 3.5 Sonnet | latest |
+| DB ORM | SQLAlchemy 2.0 Async | 2.0+ |
+| 마이그레이션 | Alembic | 1.13+ |
+| Vector DB | PostgreSQL + pgvector | - |
+| 캐시 | Upstash Redis | - |
+| 재시도 | tenacity | - |
+| 로깅 | loguru | 0.7+ |
+
+---
+
+## 코드 작성 규칙
+
+### 1. 비동기 — 모든 I/O는 async/await
+
+```python
+# 옳음
+async def get_simulation(db: AsyncSession, sim_id: str) -> Simulation:
+    result = await db.execute(select(Simulation).where(Simulation.id == sim_id))
+    return result.scalar_one_or_none()
+
+# 금지 — 동기 DB/LLM 호출 없음
+def get_simulation(db: Session, sim_id: str) -> Simulation:
+    ...
+```
+
+### 2. Pydantic v2 — v1 문법 사용 금지
+
+```python
+# 옳음
+from pydantic import BaseModel, model_validator, field_validator
+
+class Persona(BaseModel):
+    age: int
+    price_sensitivity: float
+
+    @field_validator("price_sensitivity")
+    @classmethod
+    def check_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("0.0~1.0 범위")
+        return v
+
+# 금지
+@validator("price_sensitivity")   # v1 문법
+```
+
+### 3. LLM 응답 — 반드시 JSON 강제
+
+```python
+# 옳음 — response_format 항상 지정
+response = await client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=messages,
+    response_format={"type": "json_object"},
+    temperature=persona.temperature_assigned,
+    seed=persona.seed,
+)
+
+# 금지 — 자유 텍스트 파싱
+content = response.choices[0].message.content
+data = parse_free_text(content)   # 절대 금지
+```
+
+### 4. LLM 폴백 체인 — 반드시 구현
+
+```python
+# 순서: GPT-4o-mini → Claude Haiku → 캐시 재사용 → 페르소나 제외
+async def call_with_fallback(messages: list, persona_id: str) -> dict:
+    try:
+        return await call_openai(messages)
+    except RateLimitError:
+        try:
+            return await call_claude_haiku(messages)
+        except Exception:
+            cached = await get_cached_similar(persona_id)
+            if cached:
+                return cached
+            raise PersonaExcludedError(persona_id)
+```
+
+### 5. 재시도 — tenacity 사용
+
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+async def call_llm(messages: list) -> dict:
+    ...
+```
+
+### 6. 병렬 실행 — asyncio.gather + Semaphore
+
+```python
+# 50명 이하: 단순 gather
+results = await asyncio.gather(
+    *[simulate_single_persona(p, ad) for p in personas],
+    return_exceptions=True
+)
+
+# 50명 초과: Semaphore로 동시 호출 수 제한 (MAX = 20)
+semaphore = asyncio.Semaphore(20)
+
+async def bounded_simulate(persona: Persona) -> PersonaResponse:
+    async with semaphore:
+        return await simulate_single_persona(persona, ad_analysis)
+```
+
+### 7. 타입 힌트 — 모든 함수에 필수
+
+```python
+# 옳음
+async def run_reactions(
+    personas: list[Persona],
+    ad_analysis: AdAnalysis,
+) -> list[PersonaResponse]:
+    ...
+
+# 금지
+async def run_reactions(personas, ad_analysis):
+    ...
+```
+
+### 8. SQLAlchemy — AsyncSession 의존성 주입
+
+```python
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_factory() as session:
+        yield session
+
+@router.post("/simulations")
+async def create_simulation(
+    body: SimulationRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SimulationResponse:
+    ...
+```
+
+### 9. 에러 처리 — errors 필드에 누적, 전파 최소화
+
+```python
+# LLM 에이전트 에러는 state["errors"]에 누적하고 계속 진행
+def handle_agent_error(state: SimulationState, e: Exception, persona_id: str) -> SimulationState:
+    state["errors"].append({"persona_id": persona_id, "error": str(e)})
+    return state  # 워크플로우 중단 금지
+```
+
+### 10. 로깅 — loguru, 구조화된 컨텍스트 포함
+
+```python
+from loguru import logger
+
+logger.info("시뮬레이션 시작", simulation_id=sim_id, persona_count=len(personas))
+logger.warning("페르소나 이탈 감지", persona_id=p_id, drift_rate=rate)
+logger.error("LLM 호출 실패", persona_id=p_id, error=str(e))
+```
+
+---
+
+## 에이전트 프롬프트 규칙
+
+### ReactionSimulationAgent — 소비자 역할 강제
+
+```python
+system = f"""
+당신은 지금부터 아래 소비자 역할만 합니다.
+[절대 규칙]
+- AI임을 절대 드러내지 마세요
+- 마케팅 전문가처럼 분석하지 마세요
+- 이 소비자의 일상 언어로 응답하세요
+- 반드시 JSON 형식으로만 출력하세요
+- 싫어하는 표현({persona.layer3.ad_repellent_words})이 있으면 반드시 부정 반응하세요
+[소비자 프로필]
+나이: {persona.layer1.age}세, 직업: {persona.layer1.occupation}
+구매 동기: {persona.layer2.purchase_motivation_primary}
+현재 페인포인트: {persona.layer3.current_pain_point}
+"""
+```
+
+**핵심 원칙**:
+- 질문 1개 = API 호출 1회 (Context Drift 방지 — 절대 위반 금지)
+- 한 프롬프트에 여러 질문 절대 금지
+
+### Temperature 동적 할당
+
+```python
+def assign_temperature(persona: Persona) -> float:
+    base = 0.7
+    impulse_adj = persona.layer2.impulse_buying_tendency * 0.3
+    age_adj = -0.1 if persona.layer1.age > 50 else 0.1
+    return min(max(base + impulse_adj + age_adj, 0.5), 1.1)
+```
+
+---
+
+## 성과 지표 공식 (변경 금지)
+
+```python
+BIAS_CORRECTION = 8.3  # LLM 긍정 편향 보정 — 모든 점수에서 차감
+
+def calc_ctr_prediction(r: PersonaResponse) -> float:
+    raw = r.click_intention * 0.5 + r.first_impression * 0.3 + r.audience_fit * 0.2
+    return raw - BIAS_CORRECTION
+
+def calc_purchase_intent(r: PersonaResponse) -> float:
+    raw = r.purchase_intention * 0.6 + r.trust_score * 0.4
+    return raw - BIAS_CORRECTION
+
+def calc_rejection_rate(responses: list[PersonaResponse]) -> float:
+    return len([r for r in responses if r.rejection_feeling > 60]) / len(responses)
+
+def calc_confidence_score(responses: list[PersonaResponse]) -> float:
+    scores = [r.click_intention for r in responses]
+    return 1 - (np.std(scores) / 100)
+```
+
+---
+
+## 페르소나 품질 검증 기준
+
+```python
+def validate_persona_quality(responses: list[PersonaResponse]) -> bool:
+    scores = [r.click_intention for r in responses]
+    assert np.std(scores) > 15,           "T1: Persona Collapse — 동질화 감지"
+    negative = [r for r in responses if r.click_intention < 40]
+    assert len(negative) / len(responses) > 0.15, "T2: 긍정 편향 과도"
+    return True
+```
+
+| 지표 | 기준 | 문제 코드명 |
+|------|------|------------|
+| std(click_intention) | > 15 | T1: Persona Collapse |
+| 부정 반응 비율 | > 15% | T2: Social Desirability Bias |
+| Context Drift 비율 | < 10% | T3: Context Drift |
+
+---
+
+## DB 스키마 핵심 규칙
+
+- UUID Primary Key: `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`
+- JSON 데이터: `JSONB` 타입 사용 (JSON 금지)
+- 시뮬레이션 status: `pending | running | completed | failed` 이외 값 금지
+- pgvector 차원: `vector(1536)` 고정 (text-embedding-3-small 기준)
+- pgvector 인덱스: `USING ivfflat (...vector_cosine_ops)` 방식 사용
+
+```sql
+-- 표준 인덱스 패턴
+CREATE INDEX idx_{table}_{col} ON {table} USING ivfflat ({col} vector_cosine_ops);
+```
+
+---
+
+## 절대 하지 말아야 할 것
+
+| 금지 항목 | 이유 |
+|-----------|------|
+| `spokes/retreivers/` 폴더명 수정 | 기존 구조 오탈자이나 전체 import 경로가 이 이름으로 설계됨 |
+| 동기 DB/LLM 호출 | FastAPI 이벤트 루프 블로킹 → 전체 서비스 지연 |
+| 한 프롬프트에 여러 질문 | Context Drift → 페르소나 붕괴 (T3) |
+| LLM 자유 텍스트 파싱 | 비정형 응답 → 파이프라인 중단 |
+| Pydantic v1 문법 (`@validator`) | Pydantic v2와 혼용 시 런타임 에러 |
+| `response_format` 없는 LLM 호출 | JSON 파싱 실패 → 에이전트 전체 실패 |
+| Phase 2 기능을 Phase 1에 구현 | SSE, Debate Agent, RAG, 설문조사는 Phase 2 |
+| 편향 보정값(8.3) 임의 변경 | 캘리브레이션 데이터 기반 산출값 — 변경 시 전체 성과 지표 왜곡 |
+
+---
+
+## Phase 1 구현 완료 체크리스트
+
+```
+[ ] backend/core/config/settings.py    — Pydantic BaseSettings
+[ ] backend/core/database.py           — AsyncSession 팩토리
+[ ] domain/multiagent/models/bases/    — Persona, AdAnalysis, PersonaResponse
+[ ] domain/multiagent/models/enums/    — SimulationStatus, ScrollBehavior 등
+[ ] domain/multiagent/models/states/   — SimulationState TypedDict
+[ ] domain/multiagent/models/transfer/ — 요청/응답 DTO
+[ ] spokes/agents/ad_understanding.py  — GPT-4o Vision 이미지 분석
+[ ] spokes/agents/persona_generation.py — 페르소나 20명 생성
+[ ] spokes/agents/reaction_simulation.py — 소비자 반응 시뮬레이션 (핵심)
+[ ] spokes/agents/prediction.py        — 5개 성과 지표 산출
+[ ] spokes/agents/validation.py        — IQR 이상치 제거
+[ ] spokes/agents/recommendation.py   — 개선안 생성
+[ ] hub/repositories/                  — DB CRUD
+[ ] hub/services/simulation_service.py — 비즈니스 로직
+[ ] hub/orchestrator/simulation_graph.py — LangGraph 조립
+[ ] api/v1/multiagent/router.py        — REST 엔드포인트
+[ ] main.py                            — FastAPI 앱, CORS, 헬스체크
+[ ] alembic/                           — DB 마이그레이션 초기화
+```
+
+---
+
+## API 응답 표준 구조
+
+```python
+# 시뮬레이션 최종 리포트 (이 구조 준수)
+{
+    "simulation_id": "uuid",
+    "status": "completed",
+    "disclaimer": "본 결과는 AI 시뮬레이션 기반 예측입니다. 실제 성과와 ±20~30% 오차 가능.",
+    "executive_summary": {
+        "overall_score": int,           # 0~100
+        "verdict": "pass|fail|borderline",
+        "top_action": str
+    },
+    "metrics": {
+        "ctr_prediction": {"raw": float, "corrected": float, "percentile": str},
+        "purchase_intent": float,
+        "audience_fit": float,
+        "rejection_rate": float,
+        "confidence_score": float
+    },
+    "segment_breakdown": {"age_group": {}, "gender": {}},
+    "top_feedbacks": {"positive": [str], "negative": [str]},
+    "action_items": [{"priority": "HIGH|MID|LOW", "issue": str, "suggestion": str}],
+    "outliers_excluded": int,
+    "persona_count_valid": int
+}
+```
+
+---
+
+## 환경변수 키 목록
+
+```bash
+# DB & 캐시
+DATABASE_URL=postgresql+asyncpg://...   # Neon PostgreSQL
+REDIS_URL=redis://...                   # Upstash Redis
+
+# LLM
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_API_KEY=                         # Gemini (선택)
+
+# 스토리지
+R2_BUCKET_NAME=
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY=
+R2_SECRET_KEY=
+
+# OAuth (소셜 로그인)
+KAKAO_CLIENT_ID=
+NAVER_CLIENT_ID=
+GOOGLE_CLIENT_ID=
+
+# 런타임 설정
+DEFAULT_PERSONA_COUNT=20
+MAX_CONCURRENT_LLM_CALLS=20
+BIAS_CORRECTION_DEFAULT=8.3
+SIMULATION_CACHE_TTL=86400
+```
