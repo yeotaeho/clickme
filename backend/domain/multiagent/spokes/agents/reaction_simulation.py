@@ -51,6 +51,9 @@ def _build_system_prompt(persona: dict) -> str:
 - 이 소비자의 일상 언어로 응답하세요
 - 반드시 JSON 형식으로만 출력하세요
 - 아래 단어가 광고에 있으면 반드시 부정 반응하세요: {repellent}
+- scroll_behavior는 pass / pause_1sec / pause_3sec / stop_and_read 중 정확히 하나만 출력하세요
+- action_taken은 ignore / screenshot / click / share 중 정확히 하나만 출력하세요
+- 위 Enum 값 이외의 문자열을 출력하면 시스템 오류가 발생합니다
 
 [소비자 프로필]
 나이: {l1['age']}세 / 성별: {l1['gender']} / 직업: {l1['occupation']}
@@ -86,7 +89,7 @@ async def _call_openai(persona: dict, ad_analysis: dict) -> dict:
     user = _build_user_prompt(ad_analysis)
     return await openai_client.chat_completion(
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model="gpt-4o-mini",
+        model=settings.OPENAI_REACTION_MODEL,
         temperature=persona.get("temperature_assigned", 0.7),
         seed=persona.get("seed"),
     )
@@ -98,7 +101,7 @@ async def _call_claude_haiku(persona: dict, ad_analysis: dict) -> dict:
     user = _build_user_prompt(ad_analysis)
     return await anthropic_client.chat_completion(
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model="claude-haiku-4-5-20251001",
+        model=settings.ANTHROPIC_FALLBACK_MODEL,
         temperature=min(persona.get("temperature_assigned", 0.7), 1.0),
     )
 
@@ -157,6 +160,10 @@ class ReactionSimulationAgent:
                 responses.append(r)
 
         state["raw_responses"] = responses
+        state["model_config"] = {
+            "primary_model": settings.OPENAI_REACTION_MODEL,
+            "fallback_model": settings.ANTHROPIC_FALLBACK_MODEL,
+        }
         state["progress"] = 65
         logger.info("반응 시뮬레이션 완료", valid=len(responses), total=len(personas))
         return state

@@ -52,6 +52,7 @@ class ReportService:
             action_items=action_items,
             outliers_excluded=predictions.get("outliers_excluded", 0),
             persona_count_valid=len(responses),
+            reliability_notes=aggregated.get("age_reliability", {}),
         )
 
         state["report"] = report.model_dump()

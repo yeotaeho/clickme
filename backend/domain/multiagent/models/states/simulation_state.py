@@ -14,6 +14,7 @@ class SimulationState(TypedDict):
     errors: list             # list[{"type": str, "detail": str, "persona_id": str | None}]
     progress: int            # 0~100
     retry_count: int         # Supervisor 재시도 횟수
+    model_config: dict       # 사용된 LLM 모델 정보 — 재현성 추적용
 
 
 def initial_state(simulation_id: str, ad_input: dict) -> SimulationState:
@@ -30,4 +31,5 @@ def initial_state(simulation_id: str, ad_input: dict) -> SimulationState:
         errors=[],
         progress=0,
         retry_count=0,
+        model_config={},
     )

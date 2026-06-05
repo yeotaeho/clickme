@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     BIAS_CORRECTION_DEFAULT: float = 8.3
     SIMULATION_CACHE_TTL: int = 86400  # 24시간
 
+    # LLM 모델 버전 고정 (재현성 확보)
+    OPENAI_REACTION_MODEL: str = "gpt-4o-mini-2024-07-18"
+    ANTHROPIC_FALLBACK_MODEL: str = "claude-haiku-4-5-20251001"
+
     model_config = {
         "env_file": str(_ENV_FILE),
         "env_file_encoding": "utf-8",

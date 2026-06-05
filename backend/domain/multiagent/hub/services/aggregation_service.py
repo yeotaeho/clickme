@@ -2,6 +2,7 @@ from collections import defaultdict
 
 import numpy as np
 
+from backend.domain.multiagent.models.bases.persona import get_age_reliability
 from backend.domain.multiagent.models.states.simulation_state import SimulationState
 
 
@@ -29,14 +30,18 @@ class AggregationService:
         # 연령대별 집계
         age_groups: dict[str, list] = defaultdict(list)
         gender_groups: dict[str, list] = defaultdict(list)
+        age_reliability: dict[str, str] = {}
 
         for r in responses:
             persona = persona_pool.get(r["persona_id"])
             if persona:
                 age = persona["layer1"]["age"]
                 gender = persona["layer1"]["gender"]
-                age_groups[_age_group(age)].append(r)
+                group = _age_group(age)
+                age_groups[group].append(r)
                 gender_groups[gender].append(r)
+                if group not in age_reliability:
+                    age_reliability[group] = get_age_reliability(age)
 
         def group_stats(group_responses: list[dict]) -> dict:
             if not group_responses:
@@ -68,6 +73,7 @@ class AggregationService:
             },
             "top_feedbacks": {"positive": positive, "negative": negative},
             "total_valid": len(responses),
+            "age_reliability": age_reliability,
         }
         state["progress"] = 75
         return state

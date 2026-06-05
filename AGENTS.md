@@ -1,8 +1,10 @@
+# AGENTS.md
 
 ## Repository expectations
 - 프론트엔드는 Next.js 16 와 TypeScript를 사용한다.
 - 백엔드 FastAPI 라우터를 짤 때는 반드시 Pydantic 모델로 검증한다.
 - 코드를 제안할 때는 불필요한 설명은 빼고 변경된 핵심 코드 스니펫만 간결하게 보여준다.
+
 
 # Persona.100 — Claude Code 컨텍스트 레퍼런스
 

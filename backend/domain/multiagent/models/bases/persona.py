@@ -35,6 +35,22 @@ class PersonaLayer3(BaseModel):
     emotional_state_current: str
 
 
+AGE_RELIABILITY_MAP: dict[tuple[int, int], str] = {
+    (0, 19): "very_low",
+    (20, 39): "high",
+    (40, 49): "medium",
+    (50, 59): "low",
+    (60, 99): "very_low",
+}
+
+
+def get_age_reliability(age: int) -> str:
+    for (low, high), level in AGE_RELIABILITY_MAP.items():
+        if low <= age <= high:
+            return level
+    return "unknown"
+
+
 class Persona(BaseModel):
     persona_id: str  # "P_0042" 형식
     layer1: PersonaLayer1

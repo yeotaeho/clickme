@@ -54,6 +54,7 @@ class SimulationReport(BaseModel):
     action_items: list[ActionItem]
     outliers_excluded: int
     persona_count_valid: int
+    reliability_notes: dict = {}  # 연령대별 LLM 신뢰도 고지
 
 
 class SimulationCreateResponse(BaseModel):
